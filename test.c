@@ -3,6 +3,6 @@
 
 
 int main(int argc,char **argv) {
-    hdfsFS fs = hdfsConnect("+120.25.252.229", 9000);
+    hdfsFS fs = hdfsConnect("master", 9000);
     return 0;
 }
