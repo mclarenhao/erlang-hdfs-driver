@@ -8,7 +8,7 @@
 #include <hdfs.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <stdarg.h>
 
 #define LOG(msg)  printf("[erlang_hdfs_driver INFO] (%s:%d) - %s \r\n",__FILE__,__LINE__,msg)
 
@@ -32,12 +32,14 @@ void freeHdfs(ErlNifEnv* env, void* ref) {
    hdfsDisconnect(hdfs -> fs);
 }
 
-const ERL_NIF_TERM mkstring(ErlNifEnv *env,char *format,void *value) {
-   const char string[255];
-   sprintf(string,format,value);
-   return enif_make_string(env,string,ERL_NIF_LATIN1);
+const const ERL_NIF_TERM mkstring(ErlNifEnv *env,char *format,...) {
+  char string[255];
+  va_list args;
+  va_start(args,format);
+  vsprintf(string,format,args);
+  va_end(args);
+  return enif_make_string(env,string,ERL_NIF_LATIN1);
 }
-
 
 /*
  * 加载时执行
