@@ -14,86 +14,8 @@
 
 ErlNifResourceType * HDFS_TYPE;
 ERL_NIF_TERM atom_ok;
+ERL_NIF_TERM atom_error;
 
-
-/**
- * 实现一个简单的List
- */
-typedef struct tagList{
-  char* store;
-  int size;
-  int capacity;
-  int (*add)(struct tagList*,char*,int length);
-  char* (*get)(struct tagList*,int);
-} List;
-
-/**
- * 向集合内添加元素
- */
-int list_add(List* this,char *item,int length) {
-     int increment = this->size + length;
-     int *new = malloc(increment * sizeof(int));
-     if(this->store != NULL) {
-        int k=0;
-        for(k=0;k< this->size; k++) {
-          new[k] = this->store[k];
-        }
-     }
-     
-     int i=0;
-
-     
-
-     printf("increment is ::%d, and size is %d\n",increment,this->size);
-
-     for(i=0; i < length; i++) {
-        new[this->size + i]  = item[i];
-     }
-
-     printf("++++++%s\n",new);
-     if(this->store != NULL) {
-        free(this->store);
-     }
-     this->store = new;
-     this->size = increment;
-     this->capacity = this->size;
-}
-
-/**
- * 从集合内获取元素
- */
-char* list_get(List *this,int idx) {
-   if(idx < 0 || idx >= this-> capacity) {
-       LOG("ArrayOutOfBoundException");
-       return NULL;
-   }
-
-   return this -> store[idx];
-}
-
-
-int destroy_list(List *list) {
-   if(list == NULL) {
-      return -1;
-   }
-
-   if(list->store != NULL)
-      free(list -> store);
-   free(list);
-}
-
-/**
- * 创建新集合
- */
-List *new_list() {
-  List *this = malloc(sizeof(List));
-  this-> size = 0;
-  this -> capacity = 0;
-  this -> store = NULL;
-  this -> get = list_get;
-  this -> add = list_add;
-  return this;
-}
 
 
 typedef struct {
@@ -129,7 +51,7 @@ int load(ErlNifEnv *env, void **priv_data, ERL_NIF_TERM load_info) {
 
 
    atom_ok = enif_make_atom(env,"ok");
-
+   atom_error = enif_make_atom(env,"error");
    return 0;
 }
 
@@ -228,6 +150,7 @@ static ERL_NIF_TERM list_files(ErlNifEnv *env,int argc,const ERL_NIF_TERM argv[]
  * 参数2: 文件路径
  */
 static ERL_NIF_TERM read_file(ErlNifEnv *env,int argc,const ERL_NIF_TERM argv[]) {
+    
     HDFS *hdfs;
     if(!enif_get_resource(env, argv[0], HDFS_TYPE, (void**) &hdfs)) {
         return enif_make_badarg(env);
@@ -242,22 +165,109 @@ static ERL_NIF_TERM read_file(ErlNifEnv *env,int argc,const ERL_NIF_TERM argv[])
     }
 
     hdfsFileInfo *info = hdfsGetPathInfo(hdfs->fs,path);
+    
     free(path);
+    
     if(info == NULL) {
       return enif_make_badarg(env);
     }
     int size = info->mSize;
 
-    char *buf = malloc(size * sizeof(char));
-    hdfsRead(hdfs->fs,file,buf,size);
-  
+    char *buf = malloc(1024 * sizeof(char));
+    
+    int ret = 0;
 
     ErlNifBinary output_binary;
+    output_binary.size = size;
+
     enif_alloc_binary(size,&output_binary);
-    strcpy(output_binary.data, buf);
+    int length = -1;
+    do {
+        length = hdfsRead(hdfs->fs,file,buf,1024);
+        if(length != 0) {
+          int i = 0;
+          for(i = 0; i < length; i++) {
+              char *buffer = output_binary.data;
+              *(buffer + (ret + i)) = *(buf + i);
+              /* copy字节流 */
+          }
+          //printf("ret is %d, and length is %d\n",ret,length);
+          ret += length;
+        }
+    } while(length != 0);
+
+
+    
+
+   // printf("buf is %d\n",ret);
+
+
     free(buf);
+   
     hdfsCloseFile(hdfs->fs,file);
-    return enif_make_tuple2(env,atom_ok,enif_make_binary(env, &output_binary));
+    ERL_NIF_TERM r = enif_make_tuple2(env,atom_ok,enif_make_binary(env, &output_binary));
+    enif_release_binary(&output_binary);
+    return r;
+}
+
+
+
+/**
+ * 向HDFS内写数据
+ * 参数1: FS句柄
+ * 参数2: PATH 文件路径
+ * 参数3: 二进制内容
+ * example:
+ *    Hdfs = erlang_hdfs_driver:connect("master",9000,
+ *    Bin = <<.....>>,
+ *    case erlang_hdfs_driver:write_file(Hdfs,"/TEST_FILE",Bin) of
+ *         ok -> ...;
+ *         {error,Reason} -> ....
+ *    end
+ */
+static ERL_NIF_TERM write_file(ErlNifEnv *env,int argc,const ERL_NIF_TERM argv[]) {
+   LOG("写数据");
+   HDFS *hdfs;
+   if(!enif_get_resource(env, argv[0], HDFS_TYPE, (void**) &hdfs)) {
+        return enif_make_badarg(env);
+   }
+
+   char *path = malloc(256);
+   enif_get_string(env,argv[1],path,256,ERL_NIF_LATIN1);
+  
+
+   ErlNifBinary bin;
+
+   int ret =  enif_inspect_binary(env, argv[2], &bin);
+
+   if(!ret) {
+       free(path);
+       return enif_make_tuple2(env,atom_error,enif_make_string(env,"Illegal argument",ERL_NIF_LATIN1));
+   }
+
+
+   char *data = malloc(sizeof(char) * bin.size);
+   memset(data,0,bin.size);
+   memcpy(data,bin.data,bin.size);
+   
+   /**
+    * 写入HDFS
+    */
+   hdfsFile writeFile = hdfsOpenFile(hdfs->fs, path, O_WRONLY|O_CREAT, 0, 0, 0); 
+   if(!writeFile) {
+       free(path);
+       free(data);
+       return enif_make_tuple2(env,atom_error,enif_make_string(env,"could not open file on HDFS",ERL_NIF_LATIN1));
+   }
+
+
+   hdfsWrite(hdfs->fs,writeFile,data,bin.size);
+   
+   hdfsCloseFile(hdfs->fs, writeFile);
+
+   free(data);
+   free(path);
+   return atom_ok;
 }
 
 /**
@@ -267,9 +277,9 @@ static ErlNifFunc nif_funcs[] = {
    {"meta_info",0,meta_info},
    {"connect",2,connect},
    {"list_files",3,list_files},
-   {"read_file",2,read_file}
+   {"read_file",2,read_file},
+   {"write_file",3,write_file}
 };
 
 
 ERL_NIF_INIT(erlang_hdfs_driver,nif_funcs,&load,NULL,NULL,NULL) 
-
